@@ -5,8 +5,9 @@ Cooperative I/O
 ===============
 
 This module provides cooperative versions of :func:`os.read` and
-:func:`os.write`. These functions are *not* monkey-patched; you
-must explicitly call them or monkey patch them yourself.
+:func:`os.write`. When monkey-patched (via :func:`gevent.monkey.patch_all`),
+these are replaced with threadpool-backed versions that prevent blocking
+the event loop on slow I/O (e.g. NFS mounts).
 
 POSIX functions
 ---------------
@@ -60,7 +61,7 @@ try:
 except ImportError:
     fcntl = None
 
-__implements__ = ['fork',]
+__implements__ = ['fork', 'read', 'write']
 __extensions__ = ['tp_read', 'tp_write']
 
 _read = os.read
@@ -283,6 +284,34 @@ def tp_write(fd, buf):
     number of bytes written.
 
     Writing is done using the threadpool.
+    """
+    return get_hub().threadpool.apply(_write, (fd, buf))
+
+
+def read(fd, n):
+    """
+    Cooperative replacement for :func:`os.read`.
+
+    The read is offloaded to the hub's threadpool so that other greenlets
+    can run while the (potentially slow) I/O completes.  This prevents
+    event-loop starvation when reading from filesystems with high latency
+    (e.g. NFS mounts).
+
+    .. versionadded:: 25.9.1.vast1
+    """
+    return get_hub().threadpool.apply(_read, (fd, n))
+
+
+def write(fd, buf):
+    """
+    Cooperative replacement for :func:`os.write`.
+
+    The write is offloaded to the hub's threadpool so that other greenlets
+    can run while the (potentially slow) I/O completes.  This prevents
+    event-loop starvation when writing to filesystems with high latency
+    (e.g. NFS mounts with O_SYNC).
+
+    .. versionadded:: 25.9.1.vast1
     """
     return get_hub().threadpool.apply(_write, (fd, buf))
 
