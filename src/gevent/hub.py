@@ -154,6 +154,13 @@ def sleep(seconds=0, ref=True):
     hub = _get_hub_noargs()
     loop = hub.loop
     if seconds <= 0:
+        if hub.dead:
+            import os, time as _t
+            _tid = __import__('_thread').get_ident()
+            _lf = os.path.join("/tmp/gevent_sems", str(_tid))
+            with open(_lf, "at") as _f:
+                _f.write("SLEEP_DEAD_HUB time=%d hub=%s dead=%s t=%d\n" % (
+                    _t.time(), hub, hub.dead, id(getcurrent())))
         waiter = Waiter(hub)
         loop.run_callback(waiter.switch, None)
         waiter.get()

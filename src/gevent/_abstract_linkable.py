@@ -12,6 +12,8 @@ objects.) `gevent.greenlet.Greenlet` implements this protocol but
 does not extend this object (TODO: It probably should.)
 """
 import sys
+import os
+import time
 from gc import get_objects
 
 from greenlet import greenlet
@@ -27,6 +29,15 @@ from gevent.timeout import Timeout
 
 locals()['getcurrent'] = __import__('greenlet').getcurrent
 locals()['greenlet_init'] = lambda: None
+
+_GEVENT_LOG_FOLDER = "/tmp/gevent_sems"
+
+def _sem_log(tag, **kw):
+    tid = _get_thread_ident()
+    logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+    parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
+    with open(logfile, "at") as f:
+        f.write("%s time=%d %s\n" % (tag, time.time(), parts))
 
 __all__ = [
     'AbstractLinkable',
@@ -191,6 +202,8 @@ class AbstractLinkable(object):
                 # back, holding GIL
                 if self.hub is my_hub:
                     self.hub = None
+                    _sem_log("h1", id=id(self), hid=id(self.hub), hn=self.hub is None,
+                             t=id(self._getcurrent()))
                     my_hub = None
                     break
             else:
@@ -204,6 +217,8 @@ class AbstractLinkable(object):
             # we lost the race.
             if self.hub is None:
                 self.hub = current_hub
+                _sem_log("h2", id=id(self), hid=id(self.hub), hn=self.hub is None,
+                         t=id(self._getcurrent()))
 
         if self.hub is not None and self.hub.thread_ident != _get_thread_ident():
             raise InvalidThreadUseError(
@@ -447,6 +462,8 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
+            if self.hub is None:
+                _sem_log("h3_HUB_IS_NONE", id=id(self), t=id(self._getcurrent()))
             the_hub = self.hub if self.hub is not None else get_hub()
             self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
@@ -455,6 +472,12 @@ class AbstractLinkable(object):
             self._quiet_unlink_all(resume_this_greenlet)
 
     def _switch_to_hub(self, the_hub):
+        if the_hub is None or the_hub.dead:
+            import traceback
+            _sem_log("SWITCH_TO_BAD_HUB", id=id(self),
+                     hub=the_hub, dead=getattr(the_hub, 'dead', 'N/A'),
+                     t=id(self._getcurrent()),
+                     stack="".join(traceback.format_stack()))
         self._drop_lock_for_switch_out()
         try:
             result = the_hub.switch()
@@ -543,6 +566,8 @@ class AbstractLinkable(object):
         previous hub and drops any existing notifier.
         """
         self.hub = None
+        _sem_log("h4", id=id(self), hid=id(self.hub), hn=self.hub is None,
+                 t=id(self._getcurrent()))
         self._notifier = None
 
 def _init():

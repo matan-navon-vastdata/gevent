@@ -21,6 +21,11 @@ from gevent._util import _NONE
 from greenlet import getcurrent
 from gevent._hub_local import get_hub_noargs as get_hub
 
+import os
+import time as _time_mod
+_real_get_thread_ident = __import__('_thread').get_ident
+_GEVENT_LOG_FOLDER = "/tmp/gevent_sems"
+
 __all__ = [
     'Timeout',
     'with_timeout',
@@ -232,6 +237,13 @@ class Timeout(BaseException):
         if self.seconds is None:
             # "fake" timeout (never expires)
             return
+
+        if True:
+            tid = _real_get_thread_ident()
+            logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+            with open(logfile, "at") as f:
+                f.write("TIMEOUT_START time=%d s=%s t=%d timeout_id=%d\n" % (
+                    _time_mod.time(), self.seconds, id(getcurrent()), id(self)))
 
         if self.exception is None or self.exception is False or isinstance(self.exception, string_types):
             # timeout that raises self

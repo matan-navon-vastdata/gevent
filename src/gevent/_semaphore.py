@@ -8,6 +8,8 @@
 # handled in ``gevent.lock``, do not apply to them.
 ###
 from __future__ import print_function, absolute_import, division
+import os
+import time
 
 __all__ = [
     'Semaphore',
@@ -30,6 +32,17 @@ del _get_linkable
 from gevent._hub_local import get_hub_if_exists
 from gevent._hub_local import get_hub
 from gevent.hub import spawn_raw
+from greenlet import getcurrent as _getcurrent_g
+
+_GEVENT_LOG_FOLDER = "/tmp/gevent_sems"
+_real_get_thread_ident = __import__('_thread').get_ident
+
+def _sem_log(tag, **kw):
+    tid = _real_get_thread_ident()
+    logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+    parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
+    with open(logfile, "at") as f:
+        f.write("%s time=%d %s\n" % (tag, time.time(), parts))
 
 class _LockReleaseLink(object):
     __slots__ = (
@@ -210,6 +223,8 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         elif self._multithreaded != self._get_thread_ident():
             self._multithreaded = _MULTI
 
+        _sem_log("a1", id=id(self), t=id(_getcurrent_g()), c=self.counter)
+
         # We conceptually now belong to the hub of the thread that
         # called this, whether or not we have to block. Note that we
         # cannot force it to be created yet, because Semaphore is used
@@ -225,27 +240,35 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             e = None
             if not self.counter and blocking:
                 # We would need to block. So coordinate with the main hub.
-                return self.__acquire_from_other_thread(invalid_thread_use, blocking, timeout)
+                x = self.__acquire_from_other_thread(invalid_thread_use, blocking, timeout)
+                _sem_log("a2", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=x)
+                return x
 
         if self.counter > 0:
             self.counter -= 1
+            _sem_log("a3", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=True)
             return True
 
         if not blocking:
+            _sem_log("a4", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=False)
             return False
 
         if self._multithreaded is not _MULTI and self.hub is None: # pylint:disable=access-member-before-definition
             self.hub = get_hub() # pylint:disable=attribute-defined-outside-init
+            _sem_log("h5", id=id(self), hid=id(self.hub), hn=self.hub is None,
+                     t=id(_getcurrent_g()))
 
         if self.hub is None and not invalid_thread_use:
             # Someone else is holding us. There's not a hub here,
             # nor is there a hub in that thread. We'll need to use regular locks.
             # This will be unfair to yet a third thread that tries to use us with greenlets.
-            return self.__acquire_from_other_thread(
+            x = self.__acquire_from_other_thread(
                 (None, None, self._getcurrent(), "NoHubs"),
                 blocking,
                 timeout
             )
+            _sem_log("a5", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=x)
+            return x
 
         # self._wait may drop both the GIL and the _lock_lock.
         # By the time we regain control, both have been reacquired.
@@ -261,20 +284,24 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
                 if len(args) == 3 and args[1].main_hub:
                     # The main hub, meaning the main thread. We probably can do nothing with this.
                     raise
-                return self.__acquire_from_other_thread(
+                x = self.__acquire_from_other_thread(
                     (self.hub, get_hub_if_exists(), self._getcurrent(), "LoopExit"),
                     blocking,
                     timeout)
+                _sem_log("a6", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=x)
+                return x
 
         if not success:
             assert timeout is not None
             # Our timer expired.
+            _sem_log("a7", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=False)
             return False
 
         # Neither our timer or another one expired, so we blocked until
         # awoke. Therefore, the counter is ours
         assert self.counter > 0, (self.counter, blocking, timeout, success,)
         self.counter -= 1
+        _sem_log("a8", id=id(self), t=id(_getcurrent_g()), c=self.counter, x=True)
         return True
 
     _py3k_acquire = acquire # PyPy needs this; it must be static for Cython
@@ -496,7 +523,10 @@ class BoundedSemaphore(Semaphore):
         Like :meth:`Semaphore.release`, but raises :class:`ValueError`
         if the semaphore is being over-released.
         """
+        _sem_log("r9", id=id(self), t=id(_getcurrent_g()), c=self.counter, i=self._initial_value)
         if self.counter >= self._initial_value:
+            _sem_log("r10_OVER_RELEASE", id=id(self), t=id(_getcurrent_g()),
+                     c=self.counter, i=self._initial_value)
             raise self._OVER_RELEASE_ERROR("Semaphore released too many times")
         counter = Semaphore.release(self)
         # When we are absolutely certain that no one holds this semaphore,
@@ -504,6 +534,8 @@ class BoundedSemaphore(Semaphore):
         # uses.
         if counter == self._initial_value:
             self.hub = None # pylint:disable=attribute-defined-outside-init
+            _sem_log("h6", id=id(self), hid=id(self.hub), hn=self.hub is None,
+                     t=id(_getcurrent_g()))
         return counter
 
     def _at_fork_reinit(self):

@@ -63,6 +63,20 @@ from gevent.greenlet import Greenlet
 from gevent.lock import BoundedSemaphore
 from gevent.local import local as _local
 from gevent.exceptions import LoopExit
+from gevent.timeout import Timeout
+
+import os
+import time as _time_mod
+
+_real_get_thread_ident = __import__('_thread').get_ident
+_GEVENT_LOG_FOLDER = "/tmp/gevent_sems"
+
+def _thr_log(tag, **kw):
+    tid = _real_get_thread_ident()
+    logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+    parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
+    with open(logfile, "at") as f:
+        f.write("%s time=%d %s\n" % (tag, _time_mod.time(), parts))
 
 
 if hasattr(__thread__, 'RLock'):
@@ -308,8 +322,17 @@ class LockType(BoundedSemaphore):
             if blocking: # pragma: no cover
                 raise
             acquired = False
+        except Timeout as t:
+            if True:
+                import traceback
+                _thr_log("TIMEOUT_ACQUIRE", timeout=timeout, blocking=blocking,
+                         s=t.seconds, t=id(getcurrent()), timeout_id=id(t),
+                         stack="".join(traceback.format_stack()))
+            raise
 
-        if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
+        _current = getcurrent()
+        _ghub = get_hub_if_exists()
+        if not acquired and not blocking and _current is not _ghub:
             # Run other callbacks. This makes spin locks works.
             # We can't do this if we're in the hub, which we could easily be:
             # printing the repr of a thread checks its tstate_lock, and sometimes we
@@ -319,6 +342,8 @@ class LockType(BoundedSemaphore):
             # By using sleep() instead of self.wait(0), we don't force a trip
             # around the event loop *unless* we've been running callbacks for
             # longer than our switch interval.
+            _thr_log("SLEEP_BEFORE", id=id(self), t=id(_current),
+                     ghub=id(_ghub), cur=_current, gh=_ghub)
             sleep()
         return acquired
 
