@@ -27,8 +27,6 @@ def _get_linkable():
 locals()['AbstractLinkable'] = _get_linkable()
 del _get_linkable
 
-from greenlet import greenlet as _greenlet_type
-
 from gevent._hub_local import get_hub_if_exists
 from gevent._hub_local import get_hub
 from gevent.hub import spawn_raw
@@ -286,48 +284,6 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
 
     def __exit__(self, t, v, tb):
         self.release()
-
-    def _handle_unswitched_notifications(self, unswitched):
-        # Re-queue the links so they are available when _check_and_notify
-        # runs in the target hub.
-        self._links.extend(unswitched)
-
-        # Previously we only re-queued, hoping the target thread would
-        # eventually run notifications itself.  In practice nobody
-        # re-triggers _check_and_notify after BoundedSemaphore.release()
-        # clears self.hub, so the notification is silently lost and the
-        # waiting greenlet hangs forever (gevent issues #1826, #2013, #2165).
-        #
-        # We cannot call the link (greenlet.switch) directly via
-        # run_callback_threadsafe -- the switch may arrive after the
-        # destination thread already re-acquired the lock, causing
-        # InvalidSwitchError.  Instead we schedule _check_and_notify
-        # in the target hub; it guards on self.ready() so it only
-        # notifies when the semaphore is actually available.
-        for link in unswitched:
-            if not (getattr(link, '__name__', None) == 'switch'
-                    and isinstance(getattr(link, '__self__', None), _greenlet_type)):
-                continue
-
-            glet = link.__self__
-            hub = None
-            parent = glet.parent
-            while parent is not None:
-                if hasattr(parent, 'loop'):
-                    hub = parent
-                    break
-                parent = parent.parent
-
-            if hub is None:
-                from gevent._abstract_linkable import get_roots_and_hubs
-                hub = get_roots_and_hubs().get(glet)
-
-            if hub is not None and hub.loop is not None:
-                try:
-                    hub.loop.run_callback_threadsafe(self._check_and_notify)
-                except Exception:
-                    pass
-                break
 
     def __add_link(self, link):
         if not self._notifier:

@@ -316,10 +316,13 @@ class LockType(BoundedSemaphore):
             # print reprs in the hub.
             # See https://github.com/gevent/gevent/issues/1464
 
-            # By using sleep() instead of self.wait(0), we don't force a trip
-            # around the event loop *unless* we've been running callbacks for
-            # longer than our switch interval.
-            sleep()
+            # Use sleep(0.001) to force a timer-based yield instead of
+            # sleep(0)'s callback path.  sleep(0) schedules via
+            # loop.run_callback which can silently lose the wakeup,
+            # leaving this greenlet stuck in waiter.get() forever while
+            # the hub stays alive.  A 1 ms timer goes through the event
+            # loop's timer mechanism and is far more reliable.
+            sleep(0.001)
         return acquired
 
     # Should we implement _is_owned, at least for Python 2? See notes in
