@@ -447,7 +447,14 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
-            self._switch_to_hub(self.hub)
+            the_hub = self.hub
+            if the_hub is None or the_hub.dead:
+                # self.hub can become None between rawlink() and here when
+                # another thread calls BoundedSemaphore.release() which
+                # clears self.hub after counter returns to initial_value.
+                # Re-capture to avoid AttributeError / switching to a dead hub.
+                the_hub = self._capture_hub(True)
+            self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
         finally:
