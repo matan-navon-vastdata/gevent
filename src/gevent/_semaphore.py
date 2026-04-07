@@ -27,6 +27,8 @@ def _get_linkable():
 locals()['AbstractLinkable'] = _get_linkable()
 del _get_linkable
 
+from greenlet import greenlet as _greenlet_type
+
 from gevent._hub_local import get_hub_if_exists
 from gevent._hub_local import get_hub
 from gevent.hub import spawn_raw
@@ -286,29 +288,46 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         self.release()
 
     def _handle_unswitched_notifications(self, unswitched):
-        # If we fail to switch to a greenlet in another thread to send
-        # a notification, just re-queue it, in the hopes that the
-        # other thread will eventually run notifications itself.
-        #
-        # We CANNOT do what the ``super()`` does and actually allow
-        # this notification to get run sometime in the future by
-        # scheduling a callback in the other thread. The algorithm
-        # that we use to handle cross-thread locking/unlocking was
-        # designed before the schedule-a-callback mechanism was
-        # implemented. If we allow this to be run as a callback, we
-        # can find ourself the victim of ``InvalidSwitchError`` (or
-        # worse, silent corruption) because the switch can come at an
-        # unexpected time: *after* the destination thread has already
-        # acquired the lock.
-        #
-        # This manifests in a fairly reliable test failure,
-        # ``gevent.tests.test__semaphore``
-        # ``TestSemaphoreMultiThread.test_dueling_threads_with_hub``,
-        # but ONLY when running in PURE_PYTHON mode.
-        #
-        # TODO: Maybe we can rewrite that part of the algorithm to be friendly to
-        # running the callbacks?
+        # Re-queue the links so they are available when _check_and_notify
+        # runs in the target hub.
         self._links.extend(unswitched)
+
+        # Previously we only re-queued, hoping the target thread would
+        # eventually run notifications itself.  In practice nobody
+        # re-triggers _check_and_notify after BoundedSemaphore.release()
+        # clears self.hub, so the notification is silently lost and the
+        # waiting greenlet hangs forever (gevent issues #1826, #2013, #2165).
+        #
+        # We cannot call the link (greenlet.switch) directly via
+        # run_callback_threadsafe -- the switch may arrive after the
+        # destination thread already re-acquired the lock, causing
+        # InvalidSwitchError.  Instead we schedule _check_and_notify
+        # in the target hub; it guards on self.ready() so it only
+        # notifies when the semaphore is actually available.
+        for link in unswitched:
+            if not (getattr(link, '__name__', None) == 'switch'
+                    and isinstance(getattr(link, '__self__', None), _greenlet_type)):
+                continue
+
+            glet = link.__self__
+            hub = None
+            parent = glet.parent
+            while parent is not None:
+                if hasattr(parent, 'loop'):
+                    hub = parent
+                    break
+                parent = parent.parent
+
+            if hub is None:
+                from gevent._abstract_linkable import get_roots_and_hubs
+                hub = get_roots_and_hubs().get(glet)
+
+            if hub is not None and hub.loop is not None:
+                try:
+                    hub.loop.run_callback_threadsafe(self._check_and_notify)
+                except Exception:
+                    pass
+                break
 
     def __add_link(self, link):
         if not self._notifier:
