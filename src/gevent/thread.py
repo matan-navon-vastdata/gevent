@@ -72,11 +72,14 @@ _real_get_thread_ident = __import__('_thread').get_ident
 _GEVENT_LOG_FOLDER = "/tmp/gevent_sems"
 
 def _thr_log(tag, **kw):
-    tid = _real_get_thread_ident()
-    logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
-    parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
-    with open(logfile, "at") as f:
-        f.write("%s time=%d %s\n" % (tag, _time_mod.time(), parts))
+    try:
+        tid = _real_get_thread_ident()
+        logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+        parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
+        with open(logfile, "at") as f:
+            f.write("%s time=%d %s\n" % (tag, _time_mod.time(), parts))
+    except Exception:
+        pass
 
 
 if hasattr(__thread__, 'RLock'):

@@ -38,11 +38,14 @@ _GEVENT_LOG_FOLDER = "/tmp/gevent_sems"
 _real_get_thread_ident = __import__('_thread').get_ident
 
 def _sem_log(tag, **kw):
-    tid = _real_get_thread_ident()
-    logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
-    parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
-    with open(logfile, "at") as f:
-        f.write("%s time=%d %s\n" % (tag, time.time(), parts))
+    try:
+        tid = _real_get_thread_ident()
+        logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+        parts = " ".join("%s=%s" % (k, v) for k, v in kw.items())
+        with open(logfile, "at") as f:
+            f.write("%s time=%d %s\n" % (tag, time.time(), parts))
+    except Exception:
+        pass
 
 class _LockReleaseLink(object):
     __slots__ = (

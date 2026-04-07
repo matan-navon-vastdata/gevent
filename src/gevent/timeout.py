@@ -239,11 +239,14 @@ class Timeout(BaseException):
             return
 
         if True:
-            tid = _real_get_thread_ident()
-            logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
-            with open(logfile, "at") as f:
-                f.write("TIMEOUT_START time=%d s=%s t=%d timeout_id=%d\n" % (
-                    _time_mod.time(), self.seconds, id(getcurrent()), id(self)))
+            try:
+                tid = _real_get_thread_ident()
+                logfile = os.path.join(_GEVENT_LOG_FOLDER, str(tid))
+                with open(logfile, "at") as f:
+                    f.write("TIMEOUT_START time=%d s=%s t=%d timeout_id=%d\n" % (
+                        _time_mod.time(), self.seconds, id(getcurrent()), id(self)))
+            except Exception:
+                pass
 
         if self.exception is None or self.exception is False or isinstance(self.exception, string_types):
             # timeout that raises self
