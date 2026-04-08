@@ -272,73 +272,103 @@ class LockType(BoundedSemaphore):
            This matches the Lock API of Python 3
         """
         super().__init__()
+        self._debug_owner = None
 
     @classmethod
     def __init_subclass__(cls):
         raise TypeError
 
     def acquire(self, blocking=True, timeout=-1):
-        # This is the Python 3 signature.
-        # On Python 2, Lock.acquire has the signature `Lock.acquire([wait])`
-        # where `wait` is a boolean that cannot be passed by name, only position.
-        # so we're fine to use the Python 3 signature.
-
-        # Transform the default -1 argument into the None that our
-        # semaphore implementation expects, and raise the same error
-        # the stdlib implementation does.
         if timeout == -1:
             timeout = None
         if not blocking and timeout is not None:
             raise ValueError("can't specify a timeout for a non-blocking call")
         if timeout is not None:
             if timeout < 0:
-                # in C: if(timeout < 0 && timeout != -1)
                 raise ValueError("timeout value must be strictly positive")
             if timeout > self._TIMEOUT_MAX:
                 raise OverflowError('timeout value is too large')
 
+        import time as _time_mod
+        import threading as _threading
+        _t_entry = _time_mod.monotonic()
+        _caller_greenlet = getcurrent()
+        _caller_thread = _threading.current_thread()
+        _backup = None
 
         try:
-            acquired = BoundedSemaphore.acquire(self, blocking, timeout)
-        except LoopExit:
-            # Raised when the semaphore was not trivially ours, and we needed
-            # to block. Some other thread presumably owns the semaphore, and there are no greenlets
-            # running in this thread to switch to. So the best we can do is
-            # release the GIL and try again later.
-            if blocking: # pragma: no cover
-                raise
-            acquired = False
+            if blocking:
+                try:
+                    _hub = get_hub_if_exists()
+                    if _hub is not None and _hub.loop is not None:
+                        from gevent.hub import _dump_stuck_acquire, _ACQUIRE_WATCHDOG_TIMEOUT
+                        _backup = _hub.loop.timer(_ACQUIRE_WATCHDOG_TIMEOUT, ref=False)
+                        _backup.start(
+                            _dump_stuck_acquire,
+                            self, _hub, repr(_caller_greenlet),
+                            _caller_thread.name, _caller_thread.ident,
+                            _t_entry
+                        )
+                except Exception:
+                    _backup = None
+
+            try:
+                acquired = BoundedSemaphore.acquire(self, blocking, timeout)
+            except LoopExit:
+                if blocking:
+                    raise
+                acquired = False
+        finally:
+            if _backup is not None:
+                try:
+                    _backup.stop()
+                    _backup.close()
+                except Exception:
+                    pass
+
+        if acquired:
+            self._debug_owner = (_caller_greenlet, _caller_thread.name, _caller_thread.ident, _t_entry)
 
         if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
-            # Run other callbacks. This makes spin locks works.
-            # We can't do this if we're in the hub, which we could easily be:
-            # printing the repr of a thread checks its tstate_lock, and sometimes we
-            # print reprs in the hub.
-            # See https://github.com/gevent/gevent/issues/1464
-
-            # By using sleep() instead of self.wait(0), we don't force a trip
-            # around the event loop *unless* we've been running callbacks for
-            # longer than our switch interval.
-            import time as _time_mod
             _t0 = _time_mod.monotonic()
             sleep()
             _elapsed = _time_mod.monotonic() - _t0
             if _elapsed > 2.0:
-                import threading as _threading
                 from gevent.hub import _gevent_debug_log
                 _gevent_debug_log(
                     "!!!! GEVENT DEBUG: sleep() in LockType.acquire took %.3fs !!!!\n"
-                    "  thread: %s (ident=%s)\n  greenlet: %s" % (
+                    "  lock: %s (id=0x%x)\n"
+                    "  thread: %s (ident=0x%x)\n  greenlet: %s" % (
                         _elapsed,
-                        _threading.current_thread().name,
-                        _threading.current_thread().ident,
-                        getcurrent(),
+                        self, id(self),
+                        _caller_thread.name, _caller_thread.ident,
+                        _caller_greenlet,
                     )
                 )
+
+        _total = _time_mod.monotonic() - _t_entry
+        if _total > 5.0:
+            from gevent.hub import _gevent_debug_log
+            _gevent_debug_log(
+                "!!!! GEVENT DEBUG: LockType.acquire() total %.3fs (blocking=%s, acquired=%s) !!!!\n"
+                "  lock: %s (id=0x%x, counter=%s)\n"
+                "  thread: %s (ident=0x%x)\n  greenlet: %s" % (
+                    _total, blocking, acquired,
+                    self, id(self), getattr(self, 'counter', '?'),
+                    _caller_thread.name, _caller_thread.ident,
+                    _caller_greenlet,
+                )
+            )
+
         return acquired
 
-    # Should we implement _is_owned, at least for Python 2? See notes in
-    # monkey.py's patch_existing_locks.
+    def release(self):
+        self._debug_owner = None
+        return BoundedSemaphore.release(self)
+
+    def _at_fork_reinit(self):
+        self._debug_owner = None
+        super()._at_fork_reinit()
 
 allocate_lock = lock = LockType
 
