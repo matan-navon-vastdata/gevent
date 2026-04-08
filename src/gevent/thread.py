@@ -322,7 +322,21 @@ class LockType(BoundedSemaphore):
             # leaving this greenlet stuck in waiter.get() forever while
             # the hub stays alive.  A 1 ms timer goes through the event
             # loop's timer mechanism and is far more reliable.
+            import time as _time_mod
+            _t0 = _time_mod.monotonic()
             sleep(0.001)
+            _elapsed = _time_mod.monotonic() - _t0
+            if _elapsed > 2.0:
+                import sys as _sys
+                import threading as _threading
+                print(
+                    "\n!!!! GEVENT DEBUG: sleep(0.001) in LockType.acquire took %.3fs !!!!" % _elapsed,
+                    file=_sys.stderr
+                )
+                print("  thread: %s (ident=%s)" % (
+                    _threading.current_thread().name, _threading.current_thread().ident
+                ), file=_sys.stderr)
+                print("  greenlet: %s" % getcurrent(), file=_sys.stderr)
         return acquired
 
     # Should we implement _is_owned, at least for Python 2? See notes in

@@ -126,6 +126,66 @@ def spawn_raw(function, *args, **kwargs):
     return g
 
 
+_WATCHDOG_TIMEOUT = 5.0
+_watchdog_triggered = False
+
+
+def _dump_stuck_waiter(waiter, hub, caller_greenlet, entry_time):
+    import time
+    import threading
+    global _watchdog_triggered
+    if waiter.ready():
+        return
+    _watchdog_triggered = True
+    elapsed = time.monotonic() - entry_time
+    try:
+        print(
+            "\n!!!! GEVENT WATCHDOG: sleep(0) waiter stuck for %.1fs !!!!" % elapsed,
+            file=sys.stderr
+        )
+        print("  waiter: %s" % waiter, file=sys.stderr)
+        print("  hub: %s" % hub, file=sys.stderr)
+        print("  caller greenlet: %s" % caller_greenlet, file=sys.stderr)
+        print("  current thread: %s (ident=%s)" % (
+            threading.current_thread().name, threading.current_thread().ident
+        ), file=sys.stderr)
+        print("  hub.loop alive: %s" % (hub.loop is not None), file=sys.stderr)
+        if hub.loop is not None:
+            try:
+                cb_count = len(hub.loop._callbacks)
+                print("  pending callbacks: %d" % cb_count, file=sys.stderr)
+                for i, cb in enumerate(hub.loop._callbacks):
+                    if i >= 10:
+                        print("  ... and %d more callbacks" % (cb_count - 10), file=sys.stderr)
+                        break
+                    print("  callback[%d]: %s args=%s" % (i, cb.callback, cb.args), file=sys.stderr)
+            except Exception as e:
+                print("  (error reading callbacks: %s)" % e, file=sys.stderr)
+
+        print("\n  All thread stacks:", file=sys.stderr)
+        for tid, frame in sys._current_frames().items():
+            tname = "unknown"
+            for t in threading.enumerate():
+                if t.ident == tid:
+                    tname = t.name
+                    break
+            print("\n  Thread %s (0x%x):" % (tname, tid), file=sys.stderr)
+            import traceback as _tb
+            for line in _tb.format_stack(frame):
+                for subline in line.splitlines():
+                    print("    " + subline, file=sys.stderr)
+
+        print("\n!!!! END GEVENT WATCHDOG DUMP !!!!\n", file=sys.stderr)
+    except Exception as e:
+        print("GEVENT WATCHDOG: error during dump: %s" % e, file=sys.stderr)
+
+    try:
+        if not waiter.ready():
+            waiter.switch(None)
+    except Exception:
+        pass
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.
@@ -154,9 +214,19 @@ def sleep(seconds=0, ref=True):
     hub = _get_hub_noargs()
     loop = hub.loop
     if seconds <= 0:
+        import time as _time_mod
         waiter = Waiter(hub)
+        caller = getcurrent()
+        entry_time = _time_mod.monotonic()
         loop.run_callback(waiter.switch, None)
-        waiter.get()
+
+        backup = loop.timer(_WATCHDOG_TIMEOUT, ref=False)
+        backup.start(_dump_stuck_waiter, waiter, hub, caller, entry_time)
+        try:
+            waiter.get()
+        finally:
+            backup.stop()
+            backup.close()
     else:
         with loop.timer(seconds, ref=ref) as t:
             # Sleeping is expected to be an "absolute" measure with

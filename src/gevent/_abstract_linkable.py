@@ -369,6 +369,14 @@ class AbstractLinkable(object):
         # Instead we schedule _check_and_notify in the target hub.
         # It guards on self.ready() so it only notifies when the
         # resource is actually available, and it is idempotent.
+        import threading as _threading
+        print(
+            "GEVENT DEBUG: _handle_unswitched_notifications called, "
+            "unswitched=%d links, self=%s, thread=%s" % (
+                len(unswitched), self, _threading.current_thread().name
+            ),
+            file=sys.stderr
+        )
         root_greenlets = None
         for link in unswitched:
             if not (getattr(link, '__name__', None) == 'switch'
@@ -393,9 +401,23 @@ class AbstractLinkable(object):
             if hub is not None and hub.loop is not None:
                 try:
                     hub.loop.run_callback_threadsafe(self._check_and_notify)
-                except Exception:
-                    pass
+                    print(
+                        "GEVENT DEBUG: scheduled _check_and_notify via "
+                        "run_callback_threadsafe on hub=%s for greenlet=%s" % (hub, glet),
+                        file=sys.stderr
+                    )
+                except Exception as exc:
+                    print(
+                        "GEVENT DEBUG: run_callback_threadsafe FAILED: %s" % exc,
+                        file=sys.stderr
+                    )
                 break
+        else:
+            print(
+                "GEVENT DEBUG: _handle_unswitched_notifications found no "
+                "suitable greenlet/hub to schedule on",
+                file=sys.stderr
+            )
 
 
     def __print_unswitched_warning(self, link, printed_tb):
