@@ -289,13 +289,7 @@ class LockType(BoundedSemaphore):
             if timeout > self._TIMEOUT_MAX:
                 raise OverflowError('timeout value is too large')
 
-        import time as _time_mod
-        import threading as _threading
-        _t_entry = _time_mod.monotonic()
-        _caller_greenlet = getcurrent()
-        _caller_thread = _threading.current_thread()
         _backup = None
-
         try:
             if blocking:
                 try:
@@ -305,9 +299,8 @@ class LockType(BoundedSemaphore):
                         _backup = _hub.loop.timer(_ACQUIRE_WATCHDOG_TIMEOUT, ref=False)
                         _backup.start(
                             _dump_stuck_acquire,
-                            self, _hub, repr(_caller_greenlet),
-                            _caller_thread.name, _caller_thread.ident,
-                            _t_entry
+                            self, _hub,
+                            __import__('time').monotonic()
                         )
                 except Exception:
                     _backup = None
@@ -327,38 +320,10 @@ class LockType(BoundedSemaphore):
                     pass
 
         if acquired:
-            self._debug_owner = (_caller_greenlet, _caller_thread.name, _caller_thread.ident, _t_entry)
+            self._debug_owner = (getcurrent(), __import__('_thread').get_ident(), __import__('time').monotonic())
 
         if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
-            _t0 = _time_mod.monotonic()
             sleep()
-            _elapsed = _time_mod.monotonic() - _t0
-            if _elapsed > 2.0:
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "!!!! GEVENT DEBUG: sleep() in LockType.acquire took %.3fs !!!!\n"
-                    "  lock: %s (id=0x%x)\n"
-                    "  thread: %s (ident=0x%x)\n  greenlet: %s" % (
-                        _elapsed,
-                        self, id(self),
-                        _caller_thread.name, _caller_thread.ident,
-                        _caller_greenlet,
-                    )
-                )
-
-        _total = _time_mod.monotonic() - _t_entry
-        if _total > 5.0:
-            from gevent.hub import _gevent_debug_log
-            _gevent_debug_log(
-                "!!!! GEVENT DEBUG: LockType.acquire() total %.3fs (blocking=%s, acquired=%s) !!!!\n"
-                "  lock: %s (id=0x%x, counter=%s)\n"
-                "  thread: %s (ident=0x%x)\n  greenlet: %s" % (
-                    _total, blocking, acquired,
-                    self, id(self), getattr(self, 'counter', '?'),
-                    _caller_thread.name, _caller_thread.ident,
-                    _caller_greenlet,
-                )
-            )
 
         return acquired
 

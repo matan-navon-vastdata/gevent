@@ -308,14 +308,6 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         #
         # TODO: Maybe we can rewrite that part of the algorithm to be friendly to
         # running the callbacks?
-        try:
-            from gevent.hub import _gevent_debug_log
-            _gevent_debug_log(
-                "GEVENT DEBUG: Semaphore._handle_unswitched_notifications: "
-                "re-queuing %d unswitched links for %s" % (len(unswitched), self)
-            )
-        except Exception:
-            pass
         self._links.extend(unswitched)
 
     def __add_link(self, link):

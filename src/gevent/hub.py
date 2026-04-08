@@ -126,9 +126,7 @@ def spawn_raw(function, *args, **kwargs):
     return g
 
 
-_WATCHDOG_TIMEOUT = 5.0
 _GEVENT_LOG_DIR = "/tmp/gevent_sems"
-_watchdog_triggered = False
 _ACQUIRE_WATCHDOG_TIMEOUT = 10.0
 
 
@@ -154,65 +152,7 @@ def _gevent_debug_log(msg):
         pass
 
 
-def _dump_stuck_waiter(waiter, hub, caller_greenlet, entry_time):
-    import time
-    import threading
-    global _watchdog_triggered
-    if waiter.ready():
-        return
-    _watchdog_triggered = True
-    elapsed = time.monotonic() - entry_time
-    lines = []
-    try:
-        lines.append(
-            "\n!!!! GEVENT WATCHDOG: sleep(0) waiter stuck for %.1fs !!!!" % elapsed
-        )
-        lines.append("  waiter: %s" % waiter)
-        lines.append("  hub: %s" % hub)
-        lines.append("  caller greenlet: %s" % caller_greenlet)
-        lines.append("  current thread: %s (ident=%s)" % (
-            threading.current_thread().name, threading.current_thread().ident
-        ))
-        lines.append("  hub.loop alive: %s" % (hub.loop is not None))
-        if hub.loop is not None:
-            try:
-                cb_count = len(hub.loop._callbacks)
-                lines.append("  pending callbacks: %d" % cb_count)
-                for i, cb in enumerate(hub.loop._callbacks):
-                    if i >= 10:
-                        lines.append("  ... and %d more callbacks" % (cb_count - 10))
-                        break
-                    lines.append("  callback[%d]: %s args=%s" % (i, cb.callback, cb.args))
-            except Exception as e:
-                lines.append("  (error reading callbacks: %s)" % e)
-
-        lines.append("\n  All thread stacks:")
-        for tid, frame in sys._current_frames().items():
-            tname = "unknown"
-            for t in threading.enumerate():
-                if t.ident == tid:
-                    tname = t.name
-                    break
-            lines.append("\n  Thread %s (0x%x):" % (tname, tid))
-            import traceback as _tb
-            for line in _tb.format_stack(frame):
-                for subline in line.splitlines():
-                    lines.append("    " + subline)
-
-        lines.append("\n!!!! END GEVENT WATCHDOG DUMP !!!!\n")
-    except Exception as e:
-        lines.append("GEVENT WATCHDOG: error during dump: %s" % e)
-
-    _gevent_debug_log("\n".join(lines))
-
-    try:
-        if not waiter.ready():
-            waiter.switch(None)
-    except Exception:
-        pass
-
-
-def _dump_stuck_acquire(lock_obj, hub, caller_greenlet_repr, caller_thread_name, caller_thread_ident, entry_time):
+def _dump_stuck_acquire(lock_obj, hub, entry_time):
     """Watchdog callback: fires when LockType.acquire() blocks for too long."""
     import time
     import threading
@@ -228,9 +168,9 @@ def _dump_stuck_acquire(lock_obj, hub, caller_greenlet_repr, caller_thread_name,
 
         owner = getattr(lock_obj, '_debug_owner', None)
         if owner is not None:
-            owner_glet, owner_tname, owner_tident, owner_t0 = owner
-            lines.append("  lock OWNER: thread=%s (ident=0x%x) held_for=%.1fs" % (
-                owner_tname, owner_tident, time.monotonic() - owner_t0
+            owner_glet, owner_tident, owner_t0 = owner
+            lines.append("  lock OWNER: ident=0x%x held_for=%.1fs" % (
+                owner_tident, time.monotonic() - owner_t0
             ))
             lines.append("  lock OWNER greenlet: %s" % (owner_glet,))
             try:
@@ -246,11 +186,6 @@ def _dump_stuck_acquire(lock_obj, hub, caller_greenlet_repr, caller_thread_name,
                 lines.append("  lock OWNER greenlet frame error: %s" % e)
         else:
             lines.append("  lock OWNER: UNKNOWN (no _debug_owner set)")
-
-        lines.append("  WAITER: greenlet=%s thread=%s (ident=0x%x)" % (
-            caller_greenlet_repr, caller_thread_name, caller_thread_ident
-        ))
-        lines.append("  hub: %s" % hub)
 
         lines.append("\n  All thread stacks:")
         for tid, frame in sys._current_frames().items():
@@ -300,19 +235,9 @@ def sleep(seconds=0, ref=True):
     hub = _get_hub_noargs()
     loop = hub.loop
     if seconds <= 0:
-        import time as _time_mod
         waiter = Waiter(hub)
-        caller = getcurrent()
-        entry_time = _time_mod.monotonic()
         loop.run_callback(waiter.switch, None)
-
-        backup = loop.timer(_WATCHDOG_TIMEOUT, ref=False)
-        backup.start(_dump_stuck_waiter, waiter, hub, caller, entry_time)
-        try:
-            waiter.get()
-        finally:
-            backup.stop()
-            backup.close()
+        waiter.get()
     else:
         with loop.timer(seconds, ref=ref) as t:
             # Sleeping is expected to be an "absolute" measure with
@@ -1066,9 +991,8 @@ class linkproxy(object):
 
 try:
     _gevent_debug_log(
-        "GEVENT DEBUG: hub.py loaded - watchdog instrumentation active "
-        "(pid=%d, sleep_watchdog=%.1fs, acquire_watchdog=%.1fs)" % (
-            __import__('os').getpid(), _WATCHDOG_TIMEOUT, _ACQUIRE_WATCHDOG_TIMEOUT
+        "GEVENT DEBUG: hub.py loaded - acquire_watchdog=%.1fs (pid=%d)" % (
+            _ACQUIRE_WATCHDOG_TIMEOUT, __import__('os').getpid()
         )
     )
 except Exception:
