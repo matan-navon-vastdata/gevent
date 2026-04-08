@@ -319,7 +319,22 @@ class LockType(BoundedSemaphore):
             # By using sleep() instead of self.wait(0), we don't force a trip
             # around the event loop *unless* we've been running callbacks for
             # longer than our switch interval.
+            import time as _time_mod
+            _t0 = _time_mod.monotonic()
             sleep()
+            _elapsed = _time_mod.monotonic() - _t0
+            if _elapsed > 2.0:
+                import threading as _threading
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "!!!! GEVENT DEBUG: sleep() in LockType.acquire took %.3fs !!!!\n"
+                    "  thread: %s (ident=%s)\n  greenlet: %s" % (
+                        _elapsed,
+                        _threading.current_thread().name,
+                        _threading.current_thread().ident,
+                        getcurrent(),
+                    )
+                )
         return acquired
 
     # Should we implement _is_owned, at least for Python 2? See notes in

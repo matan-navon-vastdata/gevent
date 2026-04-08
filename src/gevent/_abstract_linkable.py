@@ -376,6 +376,14 @@ class AbstractLinkable(object):
         #
         # TODO: Add a 'strict' mode that prevents doing this dance, since it's
         # inherently not safe.
+        import threading as _threading
+        from gevent.hub import _gevent_debug_log
+        _gevent_debug_log(
+            "GEVENT DEBUG: _handle_unswitched_notifications called, "
+            "unswitched=%d links, self=%s, thread=%s" % (
+                len(unswitched), self, _threading.current_thread().name
+            )
+        )
         root_greenlets = None
         printed_tb = False
         only_while_ready = not self._notify_all
@@ -406,7 +414,17 @@ class AbstractLinkable(object):
                     hub = root_greenlets.get(glet)
 
                 if hub is not None and hub.loop is not None:
-                    hub.loop.run_callback_threadsafe(link, self)
+                    try:
+                        hub.loop.run_callback_threadsafe(link, self)
+                        _gevent_debug_log(
+                            "GEVENT DEBUG: scheduled link via "
+                            "run_callback_threadsafe on hub=%s for greenlet=%s" % (hub, glet)
+                        )
+                    except Exception as exc:
+                        _gevent_debug_log(
+                            "GEVENT DEBUG: run_callback_threadsafe FAILED: %s" % exc
+                        )
+                        hub = None
             if hub is None or hub.loop is None:
                 # We couldn't handle it
                 self.__print_unswitched_warning(link, printed_tb)

@@ -126,6 +126,85 @@ def spawn_raw(function, *args, **kwargs):
     return g
 
 
+_WATCHDOG_TIMEOUT = 5.0
+_GEVENT_LOG_DIR = "/tmp/gevent_sems"
+_watchdog_triggered = False
+
+
+def _gevent_debug_log(msg):
+    try:
+        import os
+        os.makedirs(_GEVENT_LOG_DIR, exist_ok=True)
+        _tid = __import__('_thread').get_ident()
+        _lf = os.path.join(_GEVENT_LOG_DIR, str(_tid))
+        with open(_lf, "at") as _f:
+            _f.write(msg if msg.endswith("\n") else msg + "\n")
+    except Exception:
+        pass
+    try:
+        print(msg, file=sys.stderr, end="" if msg.endswith("\n") else "\n")
+    except Exception:
+        pass
+
+
+def _dump_stuck_waiter(waiter, hub, caller_greenlet, entry_time):
+    import time
+    import threading
+    global _watchdog_triggered
+    if waiter.ready():
+        return
+    _watchdog_triggered = True
+    elapsed = time.monotonic() - entry_time
+    lines = []
+    try:
+        lines.append(
+            "\n!!!! GEVENT WATCHDOG: sleep(0) waiter stuck for %.1fs !!!!" % elapsed
+        )
+        lines.append("  waiter: %s" % waiter)
+        lines.append("  hub: %s" % hub)
+        lines.append("  caller greenlet: %s" % caller_greenlet)
+        lines.append("  current thread: %s (ident=%s)" % (
+            threading.current_thread().name, threading.current_thread().ident
+        ))
+        lines.append("  hub.loop alive: %s" % (hub.loop is not None))
+        if hub.loop is not None:
+            try:
+                cb_count = len(hub.loop._callbacks)
+                lines.append("  pending callbacks: %d" % cb_count)
+                for i, cb in enumerate(hub.loop._callbacks):
+                    if i >= 10:
+                        lines.append("  ... and %d more callbacks" % (cb_count - 10))
+                        break
+                    lines.append("  callback[%d]: %s args=%s" % (i, cb.callback, cb.args))
+            except Exception as e:
+                lines.append("  (error reading callbacks: %s)" % e)
+
+        lines.append("\n  All thread stacks:")
+        for tid, frame in sys._current_frames().items():
+            tname = "unknown"
+            for t in threading.enumerate():
+                if t.ident == tid:
+                    tname = t.name
+                    break
+            lines.append("\n  Thread %s (0x%x):" % (tname, tid))
+            import traceback as _tb
+            for line in _tb.format_stack(frame):
+                for subline in line.splitlines():
+                    lines.append("    " + subline)
+
+        lines.append("\n!!!! END GEVENT WATCHDOG DUMP !!!!\n")
+    except Exception as e:
+        lines.append("GEVENT WATCHDOG: error during dump: %s" % e)
+
+    _gevent_debug_log("\n".join(lines))
+
+    try:
+        if not waiter.ready():
+            waiter.switch(None)
+    except Exception:
+        pass
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.
@@ -154,9 +233,19 @@ def sleep(seconds=0, ref=True):
     hub = _get_hub_noargs()
     loop = hub.loop
     if seconds <= 0:
+        import time as _time_mod
         waiter = Waiter(hub)
+        caller = getcurrent()
+        entry_time = _time_mod.monotonic()
         loop.run_callback(waiter.switch, None)
-        waiter.get()
+
+        backup = loop.timer(_WATCHDOG_TIMEOUT, ref=False)
+        backup.start(_dump_stuck_waiter, waiter, hub, caller, entry_time)
+        try:
+            waiter.get()
+        finally:
+            backup.stop()
+            backup.close()
     else:
         with loop.timer(seconds, ref=ref) as t:
             # Sleeping is expected to be an "absolute" measure with
